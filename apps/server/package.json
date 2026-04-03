@@ -1,0 +1,26 @@
+{
+  "name": "@strudel-collab/server",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@strudel-collab/shared": "*",
+    "ioredis": "^5.4.2",
+    "nanoid": "^5.1.2",
+    "sirv": "^3.0.2",
+    "ws": "^8.18.0",
+    "y-websocket": "2.1.0",
+    "yjs": "^13.6.27",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

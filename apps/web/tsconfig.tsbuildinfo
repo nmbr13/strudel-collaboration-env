@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/strudel-web.d.ts","./src/strudeldefault.ts","./src/vite-env.d.ts","./src/wsurl.ts","./src/components/collabeditor.tsx","./src/hooks/useroomcontrol.ts","./src/hooks/usestrudel.ts","./src/pages/homepage.tsx","./src/pages/roompage.tsx"],"version":"5.9.3"}
