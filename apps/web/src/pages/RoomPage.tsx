@@ -1,4 +1,4 @@
-import { suggestedLookaheadMs } from '@strudel-collab/shared';
+import { nextCycleAtMs, suggestedLookaheadMs } from '@strudel-collab/shared';
 import { syntaxTree } from '@codemirror/language';
 import { type FormEvent, type ReactElement, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -14,7 +14,6 @@ export function RoomPage(): ReactElement {
   const [editorGen, setEditorGen] = useState(0);
   const onEditorMounted = useCallback(() => {
     setEditorGen((g) => g + 1);
-    // Seed the first snapshot from whatever is in the doc when the editor is ready
     const initial = apiRef.current?.getCode();
     if (initial && !lastGoodCodeRef.current) {
       lastGoodCodeRef.current = initial;
@@ -32,8 +31,9 @@ export function RoomPage(): ReactElement {
   const playingRef = useRef(false);
   const lastGoodCodeRef = useRef<string | null>(null);
   const [hasSnapshot, setHasSnapshot] = useState(false);
+  const [updateQueued, setUpdateQueued] = useState(false);
 
-  // Inline join state — used when landing on the room URL without a session
+  // Inline join state
   const [joinName, setJoinName] = useState(() => sessionStorage.getItem('strudel-collab-name') ?? '');
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
@@ -47,10 +47,12 @@ export function RoomPage(): ReactElement {
     clockSkewMs,
     lastError,
     roomChannelError,
+    roomErrors,
     sendPlay,
     sendStop,
-    sendReset,
     sendSetBpm,
+    sendClientError,
+    sendClientErrorCleared,
   } = useRoomControl(session?.sessionToken ?? null);
 
   const [bpm, setBpmLocal] = useState(120);
@@ -118,39 +120,69 @@ export function RoomPage(): ReactElement {
   const handleRevert = useCallback(() => {
     const good = lastGoodCodeRef.current;
     if (!good) return;
+    strudel.cancelScheduled();
+    setUpdateQueued(false);
     apiRef.current?.setText(good);
     setEvalError(null);
-  }, []);
+    sendClientErrorCleared();
+  }, [strudel, sendClientErrorCleared]);
 
-  // Shared eval logic — used by debounced observer and Cmd+Enter shortcut
-  const runCurrentCode = useCallback(() => {
+  /**
+   * Queue the current editor code to evaluate at the next cycle boundary.
+   * If an update is already queued, cancels it instead.
+   */
+  const handleUpdate = useCallback(() => {
+    if (updateQueued) {
+      strudel.cancelScheduled();
+      setUpdateQueued(false);
+      return;
+    }
+
     const snap = apiRef.current?.getCode() ?? '';
-    void strudel.runCode(snap)
+    const schedAt = transport.scheduleAtMs;
+    if (!schedAt) return; // transport not running or no schedule time yet
+
+    const now = estimatedServerNow(clockSkewMs);
+    const targetMs = nextCycleAtMs(schedAt, transport.bpm, now);
+    const delayMs = Math.max(0, targetMs - now);
+
+    setUpdateQueued(true);
+
+    void strudel.scheduleRun(snap, transport.bpm, delayMs)
       .then(() => {
+        setUpdateQueued(false);
         setEvalError(null);
         lastGoodCodeRef.current = snap;
         setHasSnapshot(true);
+        sendClientErrorCleared();
       })
       .catch((err: unknown) => {
-        setEvalError(err instanceof Error ? err.message : 'Evaluation error');
+        // Silently ignore cancellation — the user intentionally cancelled the queued update
+        if (err instanceof Error && (err as { cancelled?: boolean }).cancelled) {
+          return;
+        }
+        setUpdateQueued(false);
+        const message = err instanceof Error ? err.message : 'Evaluation error';
+        // Extract line number from message if present (e.g. "SyntaxError: ... line 3")
+        const lineMatch = message.match(/line[: ]+(\d+)/i);
+        const line = lineMatch ? parseInt(lineMatch[1], 10) : undefined;
+        setEvalError(message);
+        sendClientError(message, line);
       });
-  }, [strudel]);
+  }, [updateQueued, transport, clockSkewMs, strudel, sendClientError, sendClientErrorCleared]);
 
-  // Global keyboard shortcuts — declared after all callbacks are defined
+  // Global keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
-      // Allow browser defaults when focus is on a plain input (e.g. BPM field)
       if (e.target instanceof HTMLInputElement) return;
 
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        if (transport.running) {
-          runCurrentCode(); // force immediate re-evaluation
-        } else {
-          void strudel.ensureInit();
-          playWithSchedule();
+        // ⌘↵ → Update (only when transport is running and no error)
+        if (transport.running && (!evalError || updateQueued)) {
+          handleUpdate();
         }
       } else if (e.key === '.') {
         e.preventDefault();
@@ -162,7 +194,7 @@ export function RoomPage(): ReactElement {
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [transport.running, strudel, playWithSchedule, sendStop, runCurrentCode, handleRevert]);
+  }, [transport.running, evalError, handleUpdate, sendStop, handleRevert]);
 
   const lastAppliedTransport = useRef<string>('');
 
@@ -178,10 +210,12 @@ export function RoomPage(): ReactElement {
     } else if (!transport.running) {
       strudel.stop();
       setEvalError(null);
+      setUpdateQueued(false);
     }
     setBpmLocal(transport.bpm);
   }, [transport, clockSkewMs, strudel]);
 
+  // Debounced auto-eval on Yjs doc changes (while transport is running)
   useEffect(() => {
     if (!transport.running) return;
     const ytext = apiRef.current?.ytext;
@@ -191,7 +225,6 @@ export function RoomPage(): ReactElement {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         if (!playingRef.current) return;
-        // Option B: syntax gate — skip evaluation if the parse tree has errors
         const view = apiRef.current?.getView();
         if (view) {
           let hasParseError = false;
@@ -203,8 +236,17 @@ export function RoomPage(): ReactElement {
             return;
           }
         }
-        // Option A: silent error recovery — keep audio alive on runtime errors
-        runCurrentCode();
+        const snap = apiRef.current?.getCode() ?? '';
+        void strudel.runCode(snap)
+          .then(() => {
+            setEvalError(null);
+            lastGoodCodeRef.current = snap;
+            setHasSnapshot(true);
+          })
+          .catch((err: unknown) => {
+            // Do NOT stop audio — keep last good code playing
+            setEvalError(err instanceof Error ? err.message : 'Evaluation error');
+          });
       }, 1200);
     };
     ytext.observe(onChange);
@@ -212,8 +254,7 @@ export function RoomPage(): ReactElement {
       if (timer) window.clearTimeout(timer);
       ytext.unobserve(onChange);
     };
-  }, [transport.running, editorGen, strudel, runCurrentCode]);
-
+  }, [transport.running, editorGen, strudel]);
 
   if (!session || !code) {
     return (
@@ -252,8 +293,11 @@ export function RoomPage(): ReactElement {
     );
   }
 
+  const roomErrorEntries = Object.entries(roomErrors);
+
   return (
     <div className="shell">
+      {/* Header */}
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.75rem' }}>
         <div className="row" style={{ gap: '0.6rem', alignItems: 'center' }}>
           {transport.running && <span className="live-dot" title="Playing" />}
@@ -268,15 +312,29 @@ export function RoomPage(): ReactElement {
         </div>
       </div>
 
+      {/* Avatar list — with error badges */}
       <div className="avatar-list" style={{ marginBottom: '0.75rem' }}>
         {roster.map((m) => (
-          <span key={m.sessionId} className={`avatar ${m.sessionId === leaderSessionId ? 'leader' : ''}`}>
-            {m.displayName}
-            {m.sessionId === mySessionId ? ' (you)' : ''}
+          <span key={m.sessionId} className="avatar-wrap">
+            <span className={`avatar ${m.sessionId === leaderSessionId ? 'leader' : ''}`}>
+              {m.displayName}
+              {m.sessionId === mySessionId ? ' (you)' : ''}
+            </span>
+            {roomErrors[m.sessionId] ? (
+              <span className="avatar-error-badge" title={roomErrors[m.sessionId].message}>!</span>
+            ) : null}
           </span>
         ))}
       </div>
 
+      {/* Room-wide error banners */}
+      {roomErrorEntries.map(([sid, err]) => (
+        <p key={sid} className="error-banner">
+          ⚠ <strong>{err.displayName}&apos;s</strong> update didn&apos;t land — playing last good version
+        </p>
+      ))}
+
+      {/* Editor */}
       <CollabEditor
         roomId={session.roomId}
         sessionToken={session.sessionToken}
@@ -285,42 +343,61 @@ export function RoomPage(): ReactElement {
         onReady={onEditorMounted}
         hasError={!!evalError}
       />
-      {evalError ? <p className="error" style={{ marginTop: '0.4rem', fontSize: '0.8rem' }}>{evalError}</p> : null}
 
+      {/* Error detail strip */}
+      {evalError ? <p className="error-strip">{evalError}</p> : null}
+
+      {/* Toolbar */}
       <div className="row toolbar">
+        {/* Play / Stop toggle */}
+        {transport.running ? (
+          <button
+            type="button"
+            className="danger"
+            title="Stop (⌘.)"
+            onClick={() => sendStop()}
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="primary"
+            title="Play"
+            onClick={() => {
+              void strudel.ensureInit();
+              playWithSchedule();
+            }}
+          >
+            Play
+          </button>
+        )}
+
+        {/* Update button */}
         <button
           type="button"
-          className={transport.running ? 'ghost' : 'primary'}
-          disabled={transport.running}
-          title="Play (⌘Enter)"
-          onClick={() => {
-            void strudel.ensureInit();
-            playWithSchedule();
-          }}
+          className={updateQueued ? 'update-queued' : 'ghost'}
+          disabled={!transport.running || (!!evalError && !updateQueued)}
+          title={updateQueued ? 'Cancel queued update (⌘↵)' : 'Update at next cycle (⌘↵)'}
+          onClick={handleUpdate}
         >
-          Play
+          {updateQueued ? '⟳ queued…' : '⟳ Update'}
         </button>
-        <button
-          type="button"
-          className={transport.running ? 'danger' : 'ghost'}
-          title="Stop (⌘.)"
-          onClick={() => sendStop()}
-        >
-          Stop
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          onClick={handleRevert}
-          disabled={!hasSnapshot}
-          title="Revert to last version that played without errors (⌘⇧Z)"
-        >
-          Revert
-        </button>
-        <button type="button" className="ghost" onClick={() => sendReset()}>
-          Reset
-        </button>
-        <label className="row muted" style={{ gap: '0.35rem' }}>
+
+        {/* Revert — only shown in error state */}
+        {evalError && hasSnapshot ? (
+          <button
+            type="button"
+            className="ghost"
+            onClick={handleRevert}
+            title="Restore last code that played without errors (⌘⇧Z)"
+          >
+            ↺ Revert
+          </button>
+        ) : null}
+
+        {/* BPM */}
+        <label className="row muted" style={{ gap: '0.35rem', marginLeft: 'auto' }}>
           BPM
           <input
             type="number"
@@ -343,4 +420,3 @@ export function RoomPage(): ReactElement {
     </div>
   );
 }
-

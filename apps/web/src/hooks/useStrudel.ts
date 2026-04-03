@@ -57,10 +57,10 @@ export function useStrudel(): {
       pendingRunCancelRef.current = () => { cancelled = true; };
 
       await new Promise((r) => setTimeout(r, Math.max(0, delayMs)));
-      if (cancelled) return;
+      if (cancelled) throw Object.assign(new Error('scheduleRun cancelled'), { cancelled: true });
 
       const repl = await ensureInit();
-      if (cancelled) return;
+      if (cancelled) throw Object.assign(new Error('scheduleRun cancelled'), { cancelled: true });
       repl.setCps(bpm / 60);
       await evaluate(code, true);
     },
