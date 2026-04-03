@@ -9,6 +9,7 @@ export function useStrudel(): {
   setBpm: (bpm: number) => Promise<void>;
   runCode: (code: string, autoplay?: boolean) => Promise<void>;
   scheduleRun: (code: string, bpm: number, delayMs: number) => Promise<void>;
+  cancelScheduled: () => void;
 } {
   const initRef = useRef<Promise<Repl> | null>(null);
 
@@ -43,6 +44,11 @@ export function useStrudel(): {
 
   const pendingRunCancelRef = useRef<(() => void) | null>(null);
 
+  const cancelScheduled = useCallback(() => {
+    pendingRunCancelRef.current?.();
+    pendingRunCancelRef.current = null;
+  }, []);
+
   const scheduleRun = useCallback(
     async (code: string, bpm: number, delayMs: number) => {
       // Cancel any previously scheduled run before starting a new one
@@ -62,7 +68,7 @@ export function useStrudel(): {
   );
 
   return useMemo(
-    () => ({ ensureInit, stop, setBpm, runCode, scheduleRun }),
-    [ensureInit, stop, setBpm, runCode, scheduleRun],
+    () => ({ ensureInit, stop, setBpm, runCode, scheduleRun, cancelScheduled }),
+    [ensureInit, stop, setBpm, runCode, scheduleRun, cancelScheduled],
   );
 }
