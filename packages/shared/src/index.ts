@@ -58,6 +58,14 @@ export const clientControlMessageSchema = z.discriminatedUnion('type', [
     scheduleAtMs: z.number(),
     cycleAtSchedule: z.number().optional(),
   }),
+  z.object({
+    type: z.literal('client:error'),
+    message: z.string(),
+    line: z.number().int().optional(),
+  }),
+  z.object({
+    type: z.literal('client:errorCleared'),
+  }),
 ]);
 
 /** Server → client control messages */
@@ -95,6 +103,17 @@ export const serverControlMessageSchema = z.discriminatedUnion('type', [
     leaderSessionId: z.string().uuid().nullable(),
     serverTimeMs: z.number(),
   }),
+  z.object({
+    type: z.literal('room:error'),
+    sessionId: z.string().uuid(),
+    displayName: z.string(),
+    message: z.string(),
+    line: z.number().int().optional(),
+  }),
+  z.object({
+    type: z.literal('room:errorCleared'),
+    sessionId: z.string().uuid(),
+  }),
 ]);
 
 export type CreateRoomResponse = z.infer<typeof createRoomResponseSchema>;
@@ -107,4 +126,20 @@ export type ServerControlMessage = z.infer<typeof serverControlMessageSchema>;
 /** Adaptive play lookahead from RTT (client-side). */
 export function suggestedLookaheadMs(rttMs: number, base = 80): number {
   return Math.min(400, Math.max(base, Math.round(rttMs * 0.75 + base)));
+}
+
+/**
+ * Returns the server timestamp (ms) of the next cycle boundary after `nowMs`.
+ * Used to schedule cycle-aligned code updates.
+ *
+ * @param scheduleAtMs - Server time when transport started (from transport:state)
+ * @param bpm - Current BPM
+ * @param nowMs - Current estimated server time (use estimatedServerNow())
+ */
+export function nextCycleAtMs(scheduleAtMs: number, bpm: number, nowMs: number): number {
+  const cycleDurationMs = (60 / bpm) * 1000; // 1 Strudel cycle = 1 beat at the given BPM
+  const elapsed = nowMs - scheduleAtMs;
+  if (elapsed < 0) return scheduleAtMs; // nowMs is before transport start; first cycle hasn't begun
+  const cyclesElapsed = Math.floor(elapsed / cycleDurationMs);
+  return scheduleAtMs + (cyclesElapsed + 1) * cycleDurationMs;
 }
