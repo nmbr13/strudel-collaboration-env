@@ -253,6 +253,25 @@ export function handleControlMessage(
       });
       break;
     }
+    case 'client:error': {
+      const member = room.members.get(sessionId);
+      if (!member) break;
+      broadcastControl(room, {
+        type: 'room:error',
+        sessionId,
+        displayName: member.displayName,
+        message: msg.message,
+        ...(msg.line !== undefined ? { line: msg.line } : {}),
+      });
+      break;
+    }
+    case 'client:errorCleared': {
+      broadcastControl(room, {
+        type: 'room:errorCleared',
+        sessionId,
+      });
+      break;
+    }
     default:
       break;
   }
