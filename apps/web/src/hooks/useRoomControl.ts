@@ -7,6 +7,12 @@ import { getWsBase } from '../wsUrl';
 
 export type RosterMember = { sessionId: string; displayName: string };
 
+export type RoomError = {
+  displayName: string;
+  message: string;
+  line?: number;
+};
+
 export function useRoomControl(sessionToken: string | null): {
   roster: RosterMember[];
   leaderSessionId: string | null;
@@ -16,11 +22,15 @@ export function useRoomControl(sessionToken: string | null): {
   clockSkewMs: number;
   lastError: string | null;
   roomChannelError: string | null;
+  /** Map of sessionId → error info for all members currently in an error state */
+  roomErrors: Record<string, RoomError>;
   sendPlay: (bpm: number, scheduleAtMs: number, cycleAtSchedule?: number) => void;
   sendStop: () => void;
   sendReset: () => void;
   sendSetBpm: (bpm: number) => void;
   sendResync: (bpm: number, scheduleAtMs: number, cycleAtSchedule?: number) => void;
+  sendClientError: (message: string, line?: number) => void;
+  sendClientErrorCleared: () => void;
 } {
   const [roster, setRoster] = useState<RosterMember[]>([]);
   const [leaderSessionId, setLeaderSessionId] = useState<string | null>(null);
@@ -36,6 +46,7 @@ export function useRoomControl(sessionToken: string | null): {
   const [clockSkewMs, setClockSkewMs] = useState(0);
   const [lastError, setLastError] = useState<string | null>(null);
   const [roomChannelError, setRoomChannelError] = useState<string | null>(null);
+  const [roomErrors, setRoomErrors] = useState<Record<string, RoomError>>({});
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -43,6 +54,7 @@ export function useRoomControl(sessionToken: string | null): {
 
     let cancelled = false;
     setRoomChannelError(null);
+    setRoomErrors({});
 
     const url = `${getWsBase()}/ws/room?token=${encodeURIComponent(sessionToken)}`;
     const ws = new WebSocket(url);
@@ -82,6 +94,23 @@ export function useRoomControl(sessionToken: string | null): {
         }
         case 'error':
           setLastError(msg.message);
+          break;
+        case 'room:error':
+          setRoomErrors((prev) => ({
+            ...prev,
+            [msg.sessionId]: {
+              displayName: msg.displayName,
+              message: msg.message,
+              line: msg.line,
+            },
+          }));
+          break;
+        case 'room:errorCleared':
+          setRoomErrors((prev) => {
+            const next = { ...prev };
+            delete next[msg.sessionId];
+            return next;
+          });
           break;
         default:
           break;
@@ -150,6 +179,22 @@ export function useRoomControl(sessionToken: string | null): {
     [send],
   );
 
+  const sendClientError = useCallback(
+    (message: string, line?: number) => {
+      send({
+        type: 'client:error',
+        message,
+        ...(line !== undefined ? { line } : {}),
+      });
+    },
+    [send],
+  );
+
+  const sendClientErrorCleared = useCallback(
+    () => send({ type: 'client:errorCleared' }),
+    [send],
+  );
+
   return {
     roster,
     leaderSessionId,
@@ -159,11 +204,14 @@ export function useRoomControl(sessionToken: string | null): {
     clockSkewMs,
     lastError,
     roomChannelError,
+    roomErrors,
     sendPlay,
     sendStop,
     sendReset,
     sendSetBpm,
     sendResync,
+    sendClientError,
+    sendClientErrorCleared,
   };
 }
 
