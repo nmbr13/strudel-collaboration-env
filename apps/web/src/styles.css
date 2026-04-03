@@ -166,3 +166,64 @@ input {
   color: #4ade80;
   transition: opacity 0.3s;
 }
+
+/* ── Live performance additions ─────────────────────────────── */
+
+/* Update button — queued/pulsing state */
+@keyframes update-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+button.update-queued {
+  background: var(--accent-dim);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  animation: update-pulse 1s ease-in-out infinite;
+}
+
+/* Avatar error badge */
+.avatar-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.avatar-error-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* Room-wide error banner */
+.error-banner {
+  background: #2d0a0a;
+  border: 1px solid #7f1d1d;
+  border-radius: 6px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+  color: #fca5a5;
+  margin-bottom: 0.4rem;
+}
+
+/* Error detail strip below editor */
+.error-strip {
+  background: #1c0808;
+  border: 1px solid #7f1d1d55;
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--danger);
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
